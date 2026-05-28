@@ -1,25 +1,59 @@
-import { parseArgs } from "util";
+#!/usr/bin/env bun
+import { Command } from "commander";
 import { join } from "path";
 import { homedir } from "os";
 import { existsSync } from "fs";
 import { connect } from "bun";
 
+const program = new Command();
+
+program
+  .name("takt")
+  .description("Takt Agents CLI")
+  .version("1.0.0")
+  .option("--json", "Output response in JSON format");
+
 async function main() {
-  const { positionals, values } = parseArgs({
-    args: Bun.argv.slice(2),
-    options: {
-      json: {
-        type: "boolean",
-      },
-    },
-    strict: false,
-    allowPositionals: true,
-  });
+  program
+    .command("status")
+    .description("Show Takt app and agents status")
+    .action(async () => {
+      await executeCommand("status");
+    });
 
-  const command = positionals[0] || "status";
-  const agentId = positionals[1];
+  program
+    .command("agents")
+    .description("List all configured agents")
+    .action(async () => {
+      await executeCommand("agents");
+    });
 
-  // Try to find the UNIX socket
+  program
+    .command("run <agentId>")
+    .description("Run a specific agent")
+    .action(async (agentId) => {
+      await executeCommand("run", agentId);
+    });
+
+  program
+    .command("run-all")
+    .description("Run all enabled agents")
+    .action(async () => {
+      await executeCommand("run-all");
+    });
+
+  program
+    .command("limits")
+    .description("Show Limits Guard status")
+    .action(async () => {
+      await executeCommand("limits");
+    });
+
+  await program.parseAsync(Bun.argv);
+}
+
+async function executeCommand(command: string, agentId?: string) {
+  const options = program.opts();
   const socketPath = join(homedir(), "Library/Application Support/Takt/takt.sock");
   let connected = false;
 
@@ -29,7 +63,7 @@ async function main() {
       const response = await sendToSocket(socketPath, { command: socketCommand, agentId });
       connected = true;
       
-      if (values.json) {
+      if (options.json) {
         console.log(JSON.stringify(response, null, 2));
       } else {
         if (response.status === "ok") {
@@ -40,6 +74,8 @@ async function main() {
             for (const agent of response.data?.agents || []) {
               console.log(`- [${agent.status}] ${agent.name} (${agent.id})`);
             }
+          } else if (command === "limits") {
+             console.log("Limits status is not fully implemented in Takt Core yet.");
           } else {
             console.log("Success");
           }
@@ -49,15 +85,16 @@ async function main() {
         }
       }
     } catch (err) {
-      // Failed to connect, socket might be stale. Fall through to Standalone mode.
+      // Failed to connect, fallback
     }
   }
 
   if (!connected) {
     // Standalone Mode (Headless Engine)
-    console.log("Running in Standalone mode (Takt App is not running).");
+    if (!options.json) {
+      console.log("Running in Standalone mode (Takt App is not running).");
+    }
     
-    // Lazy imports so we don't load everything if connected
     const { ConfigManager } = await import("./config");
     const { NetworkGuard } = await import("./networkGuard");
     const { Runner } = await import("./runner");
@@ -67,12 +104,20 @@ async function main() {
     const runner = new Runner(networkGuard);
 
     if (command === "status") {
-      console.log("Takt CLI Standalone Status: running");
-      console.log(`Loaded ${config.agents.length} agents`);
+      if (options.json) {
+        console.log(JSON.stringify({ status: "ok", data: { appStatus: "running (standalone)", agents: config.agents } }, null, 2));
+      } else {
+        console.log("Takt CLI Standalone Status: running");
+        console.log(`Loaded ${config.agents.length} agents`);
+      }
     } else if (command === "agents") {
-      console.log("Agents:");
-      for (const agent of config.agents) {
-        console.log(`- [${agent.enabled ? "enabled" : "disabled"}] ${agent.name} (${agent.id})`);
+      if (options.json) {
+        console.log(JSON.stringify({ status: "ok", data: { agents: config.agents } }, null, 2));
+      } else {
+        console.log("Agents:");
+        for (const agent of config.agents) {
+          console.log(`- [${agent.enabled ? "enabled" : "disabled"}] ${agent.name} (${agent.id})`);
+        }
       }
     } else if (command === "run") {
       if (!agentId) {
@@ -91,9 +136,8 @@ async function main() {
           await runner.runAgent(agent);
         }
       }
-    } else {
-      console.error(`Unknown command: ${command}`);
-      process.exit(1);
+    } else if (command === "limits") {
+      console.log("Limits Standalone Check: Not Implemented");
     }
   }
 }

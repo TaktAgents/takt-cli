@@ -1,7 +1,10 @@
 {
-  "name": "cli",
+  "name": "takt",
   "module": "index.ts",
   "type": "module",
+  "bin": {
+    "takt": "./src/index.ts"
+  },
   "private": true,
   "devDependencies": {
     "@types/bun": "latest"
@@ -10,6 +13,7 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "commander": "^14.0.3",
     "yaml": "^2.9.0"
   }
 }
