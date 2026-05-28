@@ -1,0 +1,75 @@
+import { parse } from "yaml";
+import { readFileSync, readdirSync, existsSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
+
+export interface AgentConfig {
+  id: string;
+  name: string;
+  command: string;
+  working_directory?: string;
+  enabled: boolean;
+  schedule?: {
+    cron?: string;
+  };
+  retry?: {
+    max_attempts: number;
+    delay_seconds: number;
+    backoff_multiplier?: number;
+  };
+  environment?: Record<string, string>;
+  limits?: Record<string, any>;
+}
+
+export interface SettingsConfig {
+  network_guard?: {
+    enabled: boolean;
+    blocked_public_ips: string[];
+    ip_check_timeout_seconds: number;
+    cache_ttl_seconds: number;
+    behavior_on_check_failure: "block" | "allow";
+    ip_check_urls: string[];
+  };
+}
+
+export class ConfigManager {
+  private configDir: string;
+  public settings: SettingsConfig = {};
+  public agents: AgentConfig[] = [];
+
+  constructor() {
+    this.configDir = join(homedir(), "Library/Application Support/Takt");
+    this.loadSettings();
+    this.loadAgents();
+  }
+
+  private loadSettings() {
+    const settingsPath = join(this.configDir, "settings.yaml");
+    if (existsSync(settingsPath)) {
+      try {
+        const content = readFileSync(settingsPath, "utf-8");
+        this.settings = parse(content) || {};
+      } catch (err) {
+        console.error(`Failed to load settings.yaml: ${err}`);
+      }
+    }
+  }
+
+  private loadAgents() {
+    const agentsDir = join(this.configDir, "agents");
+    if (!existsSync(agentsDir)) return;
+
+    try {
+      const files = readdirSync(agentsDir).filter((f) => f.endsWith(".yaml") || f.endsWith(".yml"));
+      for (const file of files) {
+        const content = readFileSync(join(agentsDir, file), "utf-8");
+        const parsed = parse(content);
+        if (parsed && parsed.id) {
+          this.agents.push(parsed as AgentConfig);
+        }
+      }
+    } catch (err) {
+      console.error(`Failed to load agents: ${err}`);
+    }
+  }
+}
