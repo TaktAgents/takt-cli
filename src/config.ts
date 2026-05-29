@@ -7,18 +7,22 @@ export interface AgentConfig {
   id: string;
   name: string;
   command: string;
+  args?: string[];
+  stdin?: string;
   working_directory?: string;
   enabled: boolean;
-  schedule?: {
-    cron?: string;
-  };
+  schedule: string[];
+  execution_mode?: "pipe" | "interactiveTTY";
+  timeout_seconds?: number;
   retry?: {
+    enabled?: boolean;
     max_attempts: number;
-    delay_seconds: number;
+    retry_delay_seconds: number;
     backoff_multiplier?: number;
   };
   environment?: Record<string, string>;
   limits?: Record<string, any>;
+  providerRef?: string;
 }
 
 export interface SettingsConfig {
