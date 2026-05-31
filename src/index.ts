@@ -4,6 +4,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { existsSync } from "fs";
 import { connect } from "bun";
+import { parseDuration } from "./duration";
 
 const program = new Command();
 
@@ -32,7 +33,7 @@ async function main() {
     .command("run <agentId>")
     .description("Run a specific agent")
     .action(async (agentId) => {
-      await executeCommand("run", agentId);
+      await executeCommand("run", { agentId });
     });
 
   program
@@ -49,20 +50,53 @@ async function main() {
       await executeCommand("limits");
     });
 
+  program
+    .command("next")
+    .description("Show upcoming scheduled agent runs")
+    .action(async () => {
+      await executeCommand("next");
+    });
+
+  program
+    .command("pause [duration]")
+    .description("Pause the scheduler (optionally for a duration, e.g. 15m, 1h, 2h, 1d)")
+    .action(async (duration?: string) => {
+      let durationSeconds: number | undefined;
+      if (duration) {
+        durationSeconds = parseDuration(duration);
+        if (durationSeconds === undefined) {
+          console.error(`Invalid duration: ${duration} (use 15m, 1h, 2h, 1d)`);
+          process.exit(3);
+        }
+      }
+      await executeCommand("pause", { durationSeconds });
+    });
+
+  program
+    .command("resume")
+    .description("Resume the scheduler")
+    .action(async () => {
+      await executeCommand("resume");
+    });
+
   await program.parseAsync(Bun.argv);
 }
 
-async function executeCommand(command: string, agentId?: string) {
+// Команды, которым нужен запущенный демон (Takt.app). Без него — exit 2.
+const DAEMON_ONLY = new Set(["pause", "resume", "next"]);
+
+async function executeCommand(command: string, extra: { agentId?: string; durationSeconds?: number } = {}) {
   const options = program.opts();
+  const { agentId, durationSeconds } = extra;
   const socketPath = join(homedir(), "Library/Application Support/Takt/takt.sock");
   let connected = false;
 
   if (existsSync(socketPath)) {
     try {
       const socketCommand = command === "agents" ? "status" : command;
-      const response = await sendToSocket(socketPath, { command: socketCommand, agentId });
+      const response = await sendToSocket(socketPath, { command: socketCommand, agentId, durationSeconds });
       connected = true;
-      
+
       if (options.json) {
         console.log(JSON.stringify(response, null, 2));
       } else {
@@ -74,6 +108,20 @@ async function executeCommand(command: string, agentId?: string) {
             for (const agent of response.data?.agents || []) {
               console.log(`- [${agent.status}] ${agent.name} (${agent.id})`);
             }
+          } else if (command === "next") {
+            const runs = response.data?.runs || [];
+            if (runs.length === 0) {
+              console.log("No upcoming runs.");
+            } else {
+              for (const r of runs) {
+                const t = new Date(r.fireDate).toLocaleString();
+                console.log(`${t}  ${r.name}`);
+              }
+            }
+          } else if (command === "pause") {
+            console.log(durationSeconds ? `Scheduler paused for ${durationSeconds}s` : "Scheduler paused");
+          } else if (command === "resume") {
+            console.log("Scheduler resumed");
           } else if (command === "limits") {
              console.log("Limits status is not fully implemented in Takt Core yet.");
           } else {
@@ -90,6 +138,11 @@ async function executeCommand(command: string, agentId?: string) {
   }
 
   if (!connected) {
+    // Команды, требующие демона, в standalone недоступны → exit 2.
+    if (DAEMON_ONLY.has(command)) {
+      console.error("Takt app is not running (required for this command).");
+      process.exit(2);
+    }
     // Standalone Mode (Headless Engine)
     if (!options.json) {
       console.log("Running in Standalone mode (Takt App is not running).");
