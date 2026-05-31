@@ -71,8 +71,8 @@ export class ConfigManager {
   public settings: SettingsConfig = {};
   public agents: AgentConfig[] = [];
 
-  constructor() {
-    this.configDir = join(homedir(), "Library/Application Support/Takt");
+  constructor(customConfigDir?: string) {
+    this.configDir = customConfigDir || join(homedir(), "Library/Application Support/Takt");
     this.loadSettings();
     this.loadAgents();
   }
