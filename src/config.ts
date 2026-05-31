@@ -1,5 +1,5 @@
-import { parse } from "yaml";
-import { readFileSync, readdirSync, existsSync } from "fs";
+import { parse, stringify } from "yaml";
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
@@ -37,7 +37,7 @@ export interface SettingsConfig {
 }
 
 export class ConfigManager {
-  private configDir: string;
+  public readonly configDir: string;
   public settings: SettingsConfig = {};
   public agents: AgentConfig[] = [];
 
@@ -45,6 +45,15 @@ export class ConfigManager {
     this.configDir = join(homedir(), "Library/Application Support/Takt");
     this.loadSettings();
     this.loadAgents();
+  }
+
+  /** Записывает текущие настройки в settings.yaml. */
+  saveSettings() {
+    if (!existsSync(this.configDir)) {
+      mkdirSync(this.configDir, { recursive: true });
+    }
+    const settingsPath = join(this.configDir, "settings.yaml");
+    writeFileSync(settingsPath, stringify(this.settings), "utf-8");
   }
 
   private loadSettings() {

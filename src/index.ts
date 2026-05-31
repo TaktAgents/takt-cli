@@ -79,7 +79,77 @@ async function main() {
       await executeCommand("resume");
     });
 
+  const guard = program.command("guard").description("Network Guard controls");
+  guard.command("status").description("Show Network Guard status").action(() => guardStatus());
+  guard.command("check").description("Force a fresh public IP check").action(() => guardStatus());
+  guard.command("add-ip <ip>").description("Add an IP to the blocked list").action((ip: string) => guardModifyIP(ip, true));
+  guard.command("remove-ip <ip>").description("Remove an IP from the blocked list").action((ip: string) => guardModifyIP(ip, false));
+
   await program.parseAsync(Bun.argv);
+}
+
+/** guard status / check — свежая проверка публичного IP и решение (работает офлайн). */
+async function guardStatus() {
+  const options = program.opts();
+  const { ConfigManager } = await import("./config");
+  const { NetworkGuard } = await import("./networkGuard");
+  const config = new ConfigManager();
+  const ngCfg = config.settings.network_guard;
+  // Принудительно включаем, чтобы всегда получить IP и оценить блок-лист.
+  const forced = { ...(ngCfg ?? { blocked_public_ips: [] as string[] }), enabled: true } as any;
+  const result = await new NetworkGuard(forced).check();
+  const blockedCount = ngCfg?.blocked_public_ips?.length ?? 0;
+  const decision = result.allowed ? "allowed" : "blocked";
+
+  if (options.json) {
+    console.log(JSON.stringify({
+      enabled: ngCfg?.enabled ?? false,
+      currentPublicIP: result.currentIp ?? null,
+      blockedIPs: blockedCount,
+      decision,
+      reason: result.reason,
+    }, null, 2));
+  } else {
+    console.log(`Network Guard: ${ngCfg?.enabled ? "enabled" : "disabled"}`);
+    console.log(`Current public IP: ${result.currentIp ?? "unknown"}`);
+    console.log(`Blocked IPs: ${blockedCount}`);
+    console.log(`Decision: ${decision}`);
+    if (!result.allowed && result.reason) console.log(`Reason: ${result.reason}`);
+  }
+  if (!result.currentIp) process.exit(21); // Network Guard error: IP undetermined
+}
+
+/** guard add-ip / remove-ip — правка блок-листа в settings.yaml. */
+async function guardModifyIP(ip: string, add: boolean) {
+  const { isValidIP } = await import("./ip");
+  if (!isValidIP(ip)) {
+    console.error(`Invalid IP address: ${ip}`);
+    process.exit(3);
+  }
+  const { ConfigManager } = await import("./config");
+  const config = new ConfigManager();
+  if (!config.settings.network_guard) {
+    config.settings.network_guard = {
+      enabled: true, blocked_public_ips: [], ip_check_timeout_seconds: 5,
+      cache_ttl_seconds: 60, behavior_on_check_failure: "block", ip_check_urls: [],
+    };
+  }
+  const ng = config.settings.network_guard;
+  const list = ng.blocked_public_ips ?? [];
+  if (add) {
+    if (!list.includes(ip)) list.push(ip);
+    ng.blocked_public_ips = list;
+  } else {
+    ng.blocked_public_ips = list.filter((x) => x !== ip);
+  }
+  config.saveSettings();
+  const verb = add ? "Added" : "Removed";
+  const prep = add ? "to" : "from";
+  if (program.opts().json) {
+    console.log(JSON.stringify({ status: "ok", blockedIPs: ng.blocked_public_ips }, null, 2));
+  } else {
+    console.log(`${verb} ${ip} ${prep} blocked list (${ng.blocked_public_ips.length} total)`);
+  }
 }
 
 // Команды, которым нужен запущенный демон (Takt.app). Без него — exit 2.
