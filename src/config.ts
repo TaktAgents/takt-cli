@@ -34,6 +34,36 @@ export interface SettingsConfig {
     behavior_on_check_failure: "block" | "allow";
     ip_check_urls: string[];
   };
+  limits_providers?: {
+    codexbar?: {
+      enabled: boolean;
+      cli_path: string;
+      status_command: string;
+    };
+    custom?: {
+      enabled: boolean;
+      command: string;
+      mapping: {
+        provider_id_path?: string;
+        provider_name_path?: string;
+        used_path?: string;
+        total_path?: string;
+        resets_at_path?: string;
+      };
+    };
+  };
+  limits_guard?: {
+    enabled: boolean;
+    provider: string;
+    behavior_on_unknown: "allow" | "block";
+    rules?: Array<{
+      provider_agent: string;
+      local_agent: string;
+      skip_if_five_hour_exhausted: boolean;
+      skip_if_weekly_exhausted: boolean;
+      skip_if_reset_within_minutes: number;
+    }>;
+  };
 }
 
 export class ConfigManager {

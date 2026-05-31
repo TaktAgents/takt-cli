@@ -43,12 +43,26 @@ async function main() {
       await executeCommand("run-all");
     });
 
-  program
-    .command("limits")
-    .description("Show Limits Guard status")
+  const limitsCmd = program.command("limits").description("Show Limits Guard status");
+
+  limitsCmd
+    .command("refresh")
+    .description("Force Takt to refresh limits status immediately")
     .action(async () => {
-      await executeCommand("limits");
+      await executeCommand("limits-refresh");
     });
+
+  const providerCmd = limitsCmd.command("provider").description("Limits provider controls");
+  providerCmd
+    .command("test <provider-name>")
+    .description("Verify the integration of a specific limits provider")
+    .action(async (providerName: string) => {
+      await executeCommand("limits-provider-test", { providerName });
+    });
+
+  limitsCmd.action(async () => {
+    await executeCommand("limits");
+  });
 
   program
     .command("next")
@@ -241,22 +255,94 @@ async function guardModifyIP(ip: string, add: boolean) {
 // Команды, которым нужен запущенный демон (Takt.app). Без него — exit 2.
 const DAEMON_ONLY = new Set(["pause", "resume", "next"]);
 
-async function executeCommand(command: string, extra: { agentId?: string; durationSeconds?: number } = {}) {
+async function executeCommand(command: string, extra: { agentId?: string; durationSeconds?: number; providerName?: string } = {}) {
   const options = program.opts();
-  const { agentId, durationSeconds } = extra;
+  const { agentId, durationSeconds, providerName } = extra;
   const socketPath = join(homedir(), "Library/Application Support/Takt/takt.sock");
   let connected = false;
+
+  const { ConfigManager } = await import("./config");
+  const config = new ConfigManager();
 
   if (existsSync(socketPath)) {
     try {
       const socketCommand = command === "agents" ? "status" : command;
-      const response = await sendToSocket(socketPath, { command: socketCommand, agentId, durationSeconds });
+      const response = await sendToSocket(socketPath, { command: socketCommand, agentId, durationSeconds, providerName });
       connected = true;
 
-      if (options.json) {
-        console.log(JSON.stringify(response, null, 2));
-      } else {
-        if (response.status === "ok") {
+      if (response.status === "ok") {
+        if (command === "limits" || command === "limits-refresh") {
+          const { printLimitsText } = await import("./limits");
+          const activeProvider = config.settings.limits_guard?.provider || "codexbar";
+          const statusObj = response.data?.providerStatuses?.[activeProvider];
+          
+          if (!statusObj) {
+            if (options.json) {
+              console.log(JSON.stringify({ provider: activeProvider, status: "unavailable", limits: [] }, null, 2));
+            } else {
+              console.log(`Provider: ${activeProvider}\nStatus: unavailable\nNo data. Please configure and run limits refresh.`);
+            }
+            return;
+          }
+          
+          const fiveHour = statusObj.fiveHourWindow || statusObj.five_hour_window;
+          const weekly = statusObj.weeklyWindow || statusObj.weekly_window;
+          const credits = statusObj.credits;
+          
+          const usedPercent5 = fiveHour?.usedPercent ?? fiveHour?.used_percent;
+          const status5 = fiveHour?.status ?? "unknown";
+          const usedPercentW = weekly?.usedPercent ?? weekly?.used_percent;
+          const statusW = weekly?.status ?? "unknown";
+          
+          let status: "available" | "exhausted" | "unavailable" = "available";
+          if (status5 === "exhausted" || statusW === "exhausted") {
+            status = "exhausted";
+          }
+          
+          const limitsData = {
+            provider: statusObj.providerName || statusObj.provider_name || activeProvider,
+            status,
+            checkedAt: statusObj.checkedAt || statusObj.checked_at || new Date().toISOString(),
+            limits: [
+              {
+                providerId: statusObj.providerID || statusObj.provider_id || activeProvider,
+                providerName: statusObj.providerName || statusObj.provider_name || activeProvider,
+                fiveHourWindow: fiveHour ? {
+                  usedPercent: usedPercent5,
+                  remainingPercent: fiveHour.remainingPercent ?? fiveHour.remaining_percent,
+                  resetAt: fiveHour.resetAt ?? fiveHour.reset_at,
+                  resetInSeconds: fiveHour.resetInSeconds ?? fiveHour.reset_in_seconds,
+                  status: status5
+                } : undefined,
+                weeklyWindow: weekly ? {
+                  usedPercent: usedPercentW,
+                  remainingPercent: weekly.remainingPercent ?? weekly.remaining_percent,
+                  resetAt: weekly.resetAt ?? weekly.reset_at,
+                  resetInSeconds: weekly.resetInSeconds ?? weekly.reset_in_seconds,
+                  status: statusW
+                } : undefined,
+                credits: credits ? {
+                  amount: credits.amount,
+                  currency: credits.currency
+                } : undefined
+              }
+            ]
+          };
+          
+          if (options.json) {
+            console.log(JSON.stringify(limitsData, null, 2));
+          } else {
+            if (command === "limits-refresh") {
+              console.log("Forcing limits refresh...");
+            }
+            printLimitsText(limitsData);
+          }
+          return;
+        }
+
+        if (options.json) {
+          console.log(JSON.stringify(response, null, 2));
+        } else {
           if (command === "status") {
             console.log(`Takt App Status: ${response.data?.appStatus}`);
           } else if (command === "agents") {
@@ -278,15 +364,13 @@ async function executeCommand(command: string, extra: { agentId?: string; durati
             console.log(durationSeconds ? `Scheduler paused for ${durationSeconds}s` : "Scheduler paused");
           } else if (command === "resume") {
             console.log("Scheduler resumed");
-          } else if (command === "limits") {
-             console.log("Limits status is not fully implemented in Takt Core yet.");
           } else {
             console.log("Success");
           }
-        } else {
-          console.error(`Error: ${response.error}`);
-          process.exit(1);
         }
+      } else {
+        console.error(`Error: ${response.error}`);
+        process.exit(1);
       }
     } catch (err) {
       // Failed to connect, fallback
@@ -294,21 +378,29 @@ async function executeCommand(command: string, extra: { agentId?: string; durati
   }
 
   if (!connected) {
+    if (command === "limits-provider-test") {
+      const { testLimitsProvider } = await import("./limits");
+      if (!providerName) {
+        console.error("Missing provider name");
+        process.exit(3);
+      }
+      testLimitsProvider(providerName, config);
+      return;
+    }
+
     // Команды, требующие демона, в standalone недоступны → exit 2.
     if (DAEMON_ONLY.has(command)) {
       console.error("Takt app is not running (required for this command).");
       process.exit(2);
     }
     // Standalone Mode (Headless Engine)
-    if (!options.json) {
+    if (!options.json && command !== "limits" && command !== "limits-refresh") {
       console.log("Running in Standalone mode (Takt App is not running).");
     }
     
-    const { ConfigManager } = await import("./config");
     const { NetworkGuard } = await import("./networkGuard");
     const { Runner } = await import("./runner");
     
-    const config = new ConfigManager();
     const networkGuard = new NetworkGuard(config.settings.network_guard);
     const runner = new Runner(networkGuard);
 
@@ -345,8 +437,17 @@ async function executeCommand(command: string, extra: { agentId?: string; durati
           await runner.runAgent(agent);
         }
       }
-    } else if (command === "limits") {
-      console.log("Limits Standalone Check: Not Implemented");
+    } else if (command === "limits" || command === "limits-refresh") {
+      const { fetchLimitsStandalone, printLimitsText } = await import("./limits");
+      const limitsData = fetchLimitsStandalone(config);
+      if (options.json) {
+        console.log(JSON.stringify(limitsData, null, 2));
+      } else {
+        if (command === "limits-refresh") {
+          console.log("Forcing limits refresh...");
+        }
+        printLimitsText(limitsData);
+      }
     }
   }
 }
