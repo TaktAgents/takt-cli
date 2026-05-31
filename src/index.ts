@@ -5,6 +5,7 @@ import { homedir } from "os";
 import { existsSync } from "fs";
 import { connect } from "bun";
 import { parseDuration } from "./duration";
+import { ExitCode } from "./exitCodes";
 
 const program = new Command();
 
@@ -340,17 +341,103 @@ async function executeCommand(command: string, extra: { agentId?: string; durati
           return;
         }
 
+        if (command === "status") {
+          const data = response.data;
+          if (options.json) {
+            const jsonOutput = {
+              app: "Takt",
+              running: true,
+              scheduler: data.schedulerStatus || "active",
+              networkGuard: {
+                enabled: data.networkGuardEnabled ?? true,
+                lastDecision: "allowed", // connected mode means allowed
+                currentPublicIP: data.currentPublicIP || null
+              },
+              agents: (data.agents || []).map((a: any) => ({
+                name: a.name,
+                enabled: a.enabled,
+                state: a.status,
+                nextRun: a.nextRun || null,
+                lastSuccess: a.lastSuccess || null
+              }))
+            };
+            console.log(JSON.stringify(jsonOutput, null, 2));
+          } else {
+            console.log("Takt is running\n");
+            console.log(`Scheduler: ${data.schedulerStatus || "active"}`);
+            console.log(`Network Guard: ${data.networkGuardEnabled ? "enabled" : "disabled"}`);
+            console.log(`Current public IP: ${data.currentPublicIP || "unknown"}`);
+            
+            const enabledCount = (data.agents || []).filter((a: any) => a.enabled).length;
+            const runningCount = (data.agents || []).filter((a: any) => a.status === "running").length;
+            console.log(`Agents: ${enabledCount} enabled, ${runningCount} running`);
+            
+            // Find next run
+            let nextRunText = "-";
+            const sortedAgents = [...(data.agents || [])]
+              .filter((a: any) => a.enabled && a.nextRun)
+              .sort((a, b) => new Date(a.nextRun).getTime() - new Date(b.nextRun).getTime());
+            if (sortedAgents.length > 0) {
+              const earliest = sortedAgents[0];
+              const date = new Date(earliest.nextRun);
+              const hh = String(date.getHours()).padStart(2, "0");
+              const mm = String(date.getMinutes()).padStart(2, "0");
+              nextRunText = `${earliest.name} at ${hh}:${mm}`;
+            }
+            console.log(`Next run: ${nextRunText}`);
+          }
+          return;
+        }
+
+        if (command === "agents") {
+          const data = response.data;
+          const agents = data.agents || [];
+          if (options.json) {
+            const jsonOutput = agents.map((a: any) => ({
+              name: a.name,
+              enabled: a.enabled,
+              state: a.status,
+              nextRun: a.nextRun || null,
+              lastSuccess: a.lastSuccess || null
+            }));
+            console.log(JSON.stringify(jsonOutput, null, 2));
+          } else {
+            if (agents.length === 0) {
+              console.log("No agents configured.");
+            } else {
+              const { formatWeeklyReset } = await import("./limits");
+              const formatTimeOrDay = (isoString?: string) => {
+                if (!isoString) return "-";
+                const date = new Date(isoString);
+                if (isNaN(date.getTime())) return "-";
+                const now = new Date();
+                if (date.toDateString() === now.toDateString()) {
+                  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+                }
+                const yesterday = new Date();
+                yesterday.setDate(now.getDate() - 1);
+                if (date.toDateString() === yesterday.toDateString()) {
+                  return `yesterday ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+                }
+                return `${String(date.getDate()).padStart(2, "0")}.${String(date.getMonth() + 1).padStart(2, "0")} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+              };
+
+              for (const a of agents) {
+                const nameCol = a.name.padEnd(20);
+                const stateCol = (a.enabled ? "enabled" : "disabled").padEnd(10);
+                const nextCol = `next: ${formatTimeOrDay(a.nextRun)}`.padEnd(18);
+                const lastCol = `last success: ${formatTimeOrDay(a.lastSuccess)}`;
+                console.log(`${nameCol}${stateCol}${nextCol}${lastCol}`);
+              }
+            }
+          }
+          return;
+        }
+
         if (options.json) {
           console.log(JSON.stringify(response, null, 2));
         } else {
-          if (command === "status") {
-            console.log(`Takt App Status: ${response.data?.appStatus}`);
-          } else if (command === "agents") {
-            console.log("Agents:");
-            for (const agent of response.data?.agents || []) {
-              console.log(`- [${agent.status}] ${agent.name} (${agent.id})`);
-            }
-          } else if (command === "next") {
+          if (command === "next") {
             const runs = response.data?.runs || [];
             if (runs.length === 0) {
               console.log("No upcoming runs.");
@@ -370,7 +457,7 @@ async function executeCommand(command: string, extra: { agentId?: string; durati
         }
       } else {
         console.error(`Error: ${response.error}`);
-        process.exit(1);
+        process.exit(ExitCode.GENERIC_ERROR);
       }
     } catch (err) {
       // Failed to connect, fallback
@@ -382,7 +469,7 @@ async function executeCommand(command: string, extra: { agentId?: string; durati
       const { testLimitsProvider } = await import("./limits");
       if (!providerName) {
         console.error("Missing provider name");
-        process.exit(3);
+        process.exit(ExitCode.INVALID_COMMAND);
       }
       testLimitsProvider(providerName, config);
       return;
@@ -391,8 +478,9 @@ async function executeCommand(command: string, extra: { agentId?: string; durati
     // Команды, требующие демона, в standalone недоступны → exit 2.
     if (DAEMON_ONLY.has(command)) {
       console.error("Takt app is not running (required for this command).");
-      process.exit(2);
+      process.exit(ExitCode.APP_NOT_RUNNING);
     }
+    
     // Standalone Mode (Headless Engine)
     if (!options.json && command !== "limits" && command !== "limits-refresh") {
       console.log("Running in Standalone mode (Takt App is not running).");
@@ -406,29 +494,66 @@ async function executeCommand(command: string, extra: { agentId?: string; durati
 
     if (command === "status") {
       if (options.json) {
-        console.log(JSON.stringify({ status: "ok", data: { appStatus: "running (standalone)", agents: config.agents } }, null, 2));
+        const jsonOutput = {
+          app: "Takt",
+          running: false,
+          scheduler: "inactive",
+          networkGuard: {
+            enabled: config.settings.network_guard?.enabled ?? false,
+            lastDecision: "unknown",
+            currentPublicIP: null
+          },
+          agents: config.agents.map(a => ({
+            name: a.name,
+            enabled: a.enabled,
+            state: "idle",
+            nextRun: null,
+            lastSuccess: null
+          }))
+        };
+        console.log(JSON.stringify(jsonOutput, null, 2));
       } else {
-        console.log("Takt CLI Standalone Status: running");
-        console.log(`Loaded ${config.agents.length} agents`);
+        console.log("Takt Standalone Status: running\n");
+        console.log("Scheduler: inactive (Takt App is not running)");
+        console.log(`Network Guard: ${config.settings.network_guard?.enabled ? "enabled" : "disabled"}`);
+        console.log("Current public IP: unknown");
+        
+        const enabledCount = config.agents.filter(a => a.enabled).length;
+        console.log(`Agents: ${enabledCount} enabled, 0 running`);
+        console.log("Next run: -");
       }
     } else if (command === "agents") {
       if (options.json) {
-        console.log(JSON.stringify({ status: "ok", data: { agents: config.agents } }, null, 2));
+        const jsonOutput = config.agents.map(a => ({
+          name: a.name,
+          enabled: a.enabled,
+          state: "idle",
+          nextRun: null,
+          lastSuccess: null
+        }));
+        console.log(JSON.stringify(jsonOutput, null, 2));
       } else {
-        console.log("Agents:");
-        for (const agent of config.agents) {
-          console.log(`- [${agent.enabled ? "enabled" : "disabled"}] ${agent.name} (${agent.id})`);
+        if (config.agents.length === 0) {
+          console.log("No agents configured.");
+        } else {
+          for (const a of config.agents) {
+            const nameCol = a.name.padEnd(20);
+            const stateCol = (a.enabled ? "enabled" : "disabled").padEnd(10);
+            const nextCol = "next: -".padEnd(18);
+            const lastCol = "last success: -";
+            console.log(`${nameCol}${stateCol}${nextCol}${lastCol}`);
+          }
         }
       }
     } else if (command === "run") {
       if (!agentId) {
         console.error("Missing agent ID");
-        process.exit(1);
+        process.exit(ExitCode.INVALID_COMMAND);
       }
       const agent = config.agents.find(a => a.id === agentId);
       if (!agent) {
         console.error("Agent not found");
-        process.exit(1);
+        process.exit(ExitCode.AGENT_NOT_FOUND);
       }
       await runner.runAgent(agent);
     } else if (command === "run-all") {
@@ -479,4 +604,24 @@ async function sendToSocket(socketPath: string, payload: any): Promise<any> {
   });
 }
 
-main().catch(console.error);
+async function run() {
+  program.exitOverride();
+  try {
+    await main();
+  } catch (err: any) {
+    if (
+      err.code === "commander.unknownCommand" ||
+      err.code === "commander.unknownOption" ||
+      err.code === "commander.missingArgument" ||
+      err.code === "commander.missingMandatoryOptionValue"
+    ) {
+      process.exit(ExitCode.INVALID_COMMAND);
+    }
+    process.exit(ExitCode.INVALID_COMMAND);
+  }
+}
+
+run().catch((err) => {
+  console.error(err);
+  process.exit(ExitCode.GENERIC_ERROR);
+});

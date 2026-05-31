@@ -1,6 +1,7 @@
 import { spawn } from "bun";
 import { AgentConfig } from "./config";
 import { NetworkGuard } from "./networkGuard";
+import { ExitCode } from "./exitCodes";
 
 export class Runner {
   constructor(private networkGuard: NetworkGuard) {}
@@ -14,7 +15,7 @@ export class Runner {
     const guardResult = await this.networkGuard.check();
     if (!guardResult.allowed) {
       console.error(`[NetworkGuard] Blocked execution of ${agent.name}: ${guardResult.reason}`);
-      process.exit(20);
+      process.exit(ExitCode.BLOCKED_BY_NETWORK_GUARD);
     }
 
     console.log(`Starting agent: ${agent.name} (${agent.id})`);
@@ -29,7 +30,7 @@ export class Runner {
 
     if (cmdArgs.length === 0) {
       console.error("Invalid command");
-      process.exit(1);
+      process.exit(ExitCode.INVALID_COMMAND);
     }
 
     let fullArgs = [...cmdArgs];
@@ -62,8 +63,12 @@ export class Runner {
     }
     
     if (lastError) {
+      if (lastError.message === "Timeout") {
+        console.error(`Agent ${agent.name} failed with timeout.`);
+        process.exit(ExitCode.AGENT_TIMED_OUT);
+      }
       console.error(`Agent ${agent.name} failed with error/exitCode: ${lastError.message || lastError}`);
-      process.exit(10);
+      process.exit(ExitCode.AGENT_FAILED);
     }
 
     console.log(`Agent ${agent.name} finished successfully.`);
@@ -106,6 +111,7 @@ export class Runner {
       if (err.message === "Timeout") {
         console.error(`[Timeout] Agent ${agent.name} timed out after ${agent.timeout_seconds} seconds. Terminating.`);
         proc.kill(); // Terminate the process
+        throw new Error("Timeout");
       }
       throw err;
     }
