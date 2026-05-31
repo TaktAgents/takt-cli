@@ -79,6 +79,10 @@ async function main() {
       await executeCommand("resume");
     });
 
+  const configCmd = program.command("config").description("Configuration controls");
+  configCmd.command("open").description("Open the config folder in Finder").action(() => configOpen());
+  configCmd.command("validate").description("Validate settings.yaml and agents/*.yaml").action(() => configValidate());
+
   const guard = program.command("guard").description("Network Guard controls");
   guard.command("status").description("Show Network Guard status").action(() => guardStatus());
   guard.command("check").description("Force a fresh public IP check").action(() => guardStatus());
@@ -86,6 +90,44 @@ async function main() {
   guard.command("remove-ip <ip>").description("Remove an IP from the blocked list").action((ip: string) => guardModifyIP(ip, false));
 
   await program.parseAsync(Bun.argv);
+}
+
+/** config open — открыть каталог конфигурации в Finder. */
+async function configOpen() {
+  const { ConfigManager } = await import("./config");
+  const dir = new ConfigManager().configDir;
+  Bun.spawn(["open", dir]);
+  console.log(`Opened ${dir}`);
+}
+
+/** config validate — офлайн-валидация settings + агентов (включая cron). exit 4 при ошибках. */
+async function configValidate() {
+  const options = program.opts();
+  const { ConfigManager } = await import("./config");
+  const { isValidCron } = await import("./cron");
+  const config = new ConfigManager();
+  const errors: string[] = [];
+
+  for (const agent of config.agents) {
+    const label = agent.name || agent.id || "<unnamed>";
+    if (!agent.id) errors.push(`Agent "${label}": missing id`);
+    if (!agent.name) errors.push(`Agent "${label}": missing name`);
+    if (!agent.command) errors.push(`Agent "${label}": missing command`);
+    for (const cron of agent.schedule ?? []) {
+      if (!isValidCron(cron)) errors.push(`Agent "${label}": invalid cron "${cron}"`);
+    }
+  }
+
+  if (options.json) {
+    console.log(JSON.stringify({ valid: errors.length === 0, agents: config.agents.length, errors }, null, 2));
+  } else if (errors.length === 0) {
+    console.log("Configuration is valid.");
+    console.log(`Loaded ${config.agents.length} agents.`);
+  } else {
+    console.error("Configuration has errors:");
+    for (const e of errors) console.error(`  - ${e}`);
+  }
+  if (errors.length > 0) process.exit(4);
 }
 
 /** guard status / check — свежая проверка публичного IP и решение (работает офлайн). */
