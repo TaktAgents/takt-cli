@@ -259,7 +259,8 @@ const DAEMON_ONLY = new Set(["pause", "resume", "next"]);
 async function executeCommand(command: string, extra: { agentId?: string; durationSeconds?: number; providerName?: string } = {}) {
   const options = program.opts();
   const { agentId, durationSeconds, providerName } = extra;
-  const socketPath = join(homedir(), "Library/Application Support/Takt/takt.sock");
+  const socketDir = process.env.TAKT_SOCKET_DIR || join(homedir(), "Library/Application Support/Takt");
+  const socketPath = join(socketDir, "takt.sock");
   let connected = false;
 
   const { ConfigManager } = await import("./config");
