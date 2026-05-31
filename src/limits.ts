@@ -105,7 +105,7 @@ export function formatWeeklyReset(resetAtStr?: string, resetInSeconds?: number):
 /**
  * Опрашивает CodexBar напрямую через CLI.
  */
-export function fetchCodexBarLimits(cliPath?: string): LimitsStatusResponse {
+export function fetchCodexBarLimits(cliPath?: string, statusCommand?: string): LimitsStatusResponse {
   const path = findCodexBarPath(cliPath);
   if (!path) {
     console.error("limits provider unavailable: codexbar executable not found.");
@@ -114,8 +114,9 @@ export function fetchCodexBarLimits(cliPath?: string): LimitsStatusResponse {
 
   const { execSync } = require("child_process");
   let stdout: string;
+  const cmd = statusCommand || "status --json";
   try {
-    stdout = execSync(`"${path}" status --json`, { encoding: "utf8" });
+    stdout = execSync(`"${path}" ${cmd}`, { encoding: "utf8" });
   } catch (err: any) {
     console.error(`limits provider invalid data: codexbar execution failed: ${err.message}`);
     process.exit(32);
@@ -285,7 +286,8 @@ export function fetchLimitsStandalone(config: ConfigManager): LimitsStatusRespon
   const provider = config.settings.limits_guard?.provider || "codexbar";
   if (provider === "codexbar") {
     const cliPath = config.settings.limits_providers?.codexbar?.cli_path;
-    return fetchCodexBarLimits(cliPath);
+    const statusCommand = config.settings.limits_providers?.codexbar?.status_command;
+    return fetchCodexBarLimits(cliPath, statusCommand);
   } else if (provider === "custom") {
     return fetchCustomLimits(config.settings);
   } else {
@@ -342,6 +344,7 @@ export function testLimitsProvider(providerName: string, config: ConfigManager) 
 
   if (providerName === "codexbar") {
     const cliPath = config.settings.limits_providers?.codexbar?.cli_path;
+    const statusCommand = config.settings.limits_providers?.codexbar?.status_command;
     const path = findCodexBarPath(cliPath);
     if (!path) {
       console.error("limits provider unavailable: codexbar executable not found.");
@@ -349,10 +352,10 @@ export function testLimitsProvider(providerName: string, config: ConfigManager) 
     }
 
     console.log(`CodexBar CLI found: ${path}`);
-    console.log(`Command: ${path} status --json`);
+    console.log(`Command: "${path}" ${statusCommand || "status --json"}`);
     
     // Пытаемся выполнить и распарсить
-    const data = fetchCodexBarLimits(cliPath);
+    const data = fetchCodexBarLimits(cliPath, statusCommand);
     console.log("Result: success");
     console.log(`Parsed providers: ${data.limits.map(l => l.providerId).join(", ")}`);
   } else {

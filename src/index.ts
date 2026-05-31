@@ -58,7 +58,10 @@ async function main() {
     .command("test <provider-name>")
     .description("Verify the integration of a specific limits provider")
     .action(async (providerName: string) => {
-      await executeCommand("limits-provider-test", { providerName });
+      const { ConfigManager } = await import("./config");
+      const { testLimitsProvider } = await import("./limits");
+      const config = new ConfigManager();
+      testLimitsProvider(providerName, config);
     });
 
   limitsCmd.action(async () => {
@@ -466,15 +469,6 @@ async function executeCommand(command: string, extra: { agentId?: string; durati
   }
 
   if (!connected) {
-    if (command === "limits-provider-test") {
-      const { testLimitsProvider } = await import("./limits");
-      if (!providerName) {
-        console.error("Missing provider name");
-        process.exit(ExitCode.INVALID_COMMAND);
-      }
-      testLimitsProvider(providerName, config);
-      return;
-    }
 
     // Команды, требующие демона, в standalone недоступны → exit 2.
     if (DAEMON_ONLY.has(command)) {
