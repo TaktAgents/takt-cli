@@ -79,6 +79,14 @@ async function main() {
       await executeCommand("resume");
     });
 
+  program
+    .command("logs")
+    .description("Show structured Takt logs")
+    .option("--agent <name>", "Filter by agent name")
+    .option("--tail <count>", "Number of recent entries", "20")
+    .option("--level <level>", "Filter by level (info|warning|error)")
+    .action((opts) => showLogs(opts));
+
   const configCmd = program.command("config").description("Configuration controls");
   configCmd.command("open").description("Open the config folder in Finder").action(() => configOpen());
   configCmd.command("validate").description("Validate settings.yaml and agents/*.yaml").action(() => configValidate());
@@ -90,6 +98,42 @@ async function main() {
   guard.command("remove-ip <ip>").description("Remove an IP from the blocked list").action((ip: string) => guardModifyIP(ip, false));
 
   await program.parseAsync(Bun.argv);
+}
+
+/** logs — чтение JSONL-логов напрямую из файлов (standalone). */
+async function showLogs(opts: { agent?: string; tail?: string; level?: string }) {
+  const { parseLogLines, filterLogs } = await import("./logs");
+  const { readFileSync, existsSync } = await import("fs");
+  const logsDir = join(homedir(), "Library/Application Support/Takt/logs");
+
+  // Читаем ротированные файлы от старых к новым, затем текущий.
+  let text = "";
+  for (let i = 5; i >= 1; i--) {
+    const f = join(logsDir, `takt.${i}.log`);
+    if (existsSync(f)) text += readFileSync(f, "utf-8");
+  }
+  const current = join(logsDir, "takt.log");
+  if (existsSync(current)) text += readFileSync(current, "utf-8");
+
+  const tail = Math.max(1, parseInt(opts.tail ?? "20", 10) || 20);
+  let entries = filterLogs(parseLogLines(text), { agent: opts.agent, level: opts.level });
+  entries = entries.slice(-tail);
+
+  if (program.opts().json) {
+    console.log(JSON.stringify(entries, null, 2));
+    return;
+  }
+  if (entries.length === 0) {
+    console.log("No logs yet.");
+    return;
+  }
+  for (const e of entries) {
+    const t = new Date(e.timestamp).toLocaleString();
+    const extra = e.details && Object.keys(e.details).length
+      ? " · " + Object.entries(e.details).map(([k, v]) => `${k}=${v}`).join(" ")
+      : "";
+    console.log(`[${t}] ${e.level.toUpperCase()} ${e.agentName} · ${e.event}${extra}`);
+  }
 }
 
 /** config open — открыть каталог конфигурации в Finder. */
